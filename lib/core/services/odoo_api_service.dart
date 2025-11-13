@@ -79,23 +79,40 @@ class OdooApiService {
       }
       
       if (response.statusCode == 200) {
-        // cek jika ada respon error
+        // cek jika ada respon error (top-level)
         if (data is Map && data['error'] != null) {
           final error = data['error'];
           String errorMessage = 'Login gagal';
-          
+          int? errorCode;
           if (error is Map) {
             errorMessage = error['message'] ?? error['data']?['message'] ?? errorMessage;
+            errorCode = (error['code'] as int?) ?? (error['data']?['code'] as int?);
           } else if (error is String) {
             errorMessage = error;
           }
-          
           throw OdooException(
             message: errorMessage,
-            code: (error is Map ? error['code'] : null) ?? 400,
+            code: errorCode ?? 400,
           );
         }
-        
+
+        // cek jika ada error di dalam result.error
+        if (data is Map && data['result'] is Map && (data['result']['error'] != null)) {
+          final rerr = data['result']['error'];
+          String errorMessage = 'Login gagal';
+          int? errorCode;
+          if (rerr is Map) {
+            errorMessage = rerr['message'] ?? errorMessage;
+            errorCode = rerr['code'] as int?;
+          } else if (rerr is String) {
+            errorMessage = rerr;
+          }
+          throw OdooException(
+            message: errorMessage,
+            code: errorCode ?? 401,
+          );
+        }
+
         // Extract session ID dari cookies
         final cookies = response.headers['set-cookie'];
         print('OdooApiService.login: set-cookie header => ${cookies != null ? cookies.substring(0, cookies.length > 120 ? 120 : cookies.length) : 'null'}');

@@ -475,7 +475,7 @@ class _BerandaPageState extends State<BerandaPage> {
                 child: Column(
                   children: [
                     _buildSantriSelector(),
-                    const SizedBox(height: 20),
+                    SizedBox(height: 20 + MediaQuery.of(context).padding.bottom),
                     _buildInfoCarousel(),
                     const SizedBox(height: 10),
                     _buildPageIndicator(),
@@ -683,10 +683,11 @@ class _BerandaPageState extends State<BerandaPage> {
       onTap: onTap,
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Container(
-            width: 64,
-            height: 64,
+            width: 56,
+            height: 56,
             decoration: BoxDecoration(
               color: color.withOpacity(0.1),
               borderRadius: BorderRadius.circular(16),
@@ -694,20 +695,24 @@ class _BerandaPageState extends State<BerandaPage> {
             child: Icon(
               icon,
               color: color,
-              size: 28,
+              size: 24,
             ),
           ),
-          const SizedBox(height: 8),
-          Text(
-            label,
-            style: AppStyles.menuLabel(context).copyWith(
-              fontSize: 11, 
-              color: Colors.black87, 
-              fontWeight: FontWeight.w500
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 32,
+            child: Text(
+              label,
+              style: AppStyles.menuLabel(context).copyWith(
+                fontSize: 9.0,
+                color: Colors.black87,
+                fontWeight: FontWeight.w500,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              softWrap: true,
+              overflow: TextOverflow.ellipsis,
             ),
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -738,13 +743,18 @@ class _BerandaPageState extends State<BerandaPage> {
             ),
           ),
           const SizedBox(height: 12),
-          GridView.count(
-            crossAxisCount: 4,
+          Builder(builder: (context) {
+            final w = MediaQuery.of(context).size.width;
+            final isSmall = w < 360;
+            final cross = isSmall ? 3 : 4;
+            final aspect = isSmall ? 0.75 : 0.68;
+            return GridView.count(
+            crossAxisCount: cross,
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             crossAxisSpacing: 16,
             mainAxisSpacing: 20,
-            childAspectRatio: 0.85,
+            childAspectRatio: aspect,
             children: [
               // Profil Santri
               _buildMenuItem(
@@ -841,7 +851,7 @@ class _BerandaPageState extends State<BerandaPage> {
               _buildMenuItem(
                 context,
                 icon: Icons.description,
-                label: 'Formulir Perijinan',
+                label: 'Perijinan',
                 color: Colors.blue,
                 onTap: () {
                   Navigator.of(context, rootNavigator: true).push(
@@ -850,7 +860,8 @@ class _BerandaPageState extends State<BerandaPage> {
                 },
               ),
             ],
-          ),
+          );
+          }),
           const SizedBox(height: 20),
           Text(
             AppLocalizations.of(context).fasilitas,

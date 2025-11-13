@@ -23,7 +23,6 @@ class _MutabaahPageState extends State<MutabaahPage> {
   // --- State Management ---
   late Map<String, StudentMutabaahProfile> _allMutabaahData;
   late StudentMutabaahProfile _selectedProfile;
-  final String _selectedStudentName = StudentData.defaultStudent;
   bool _isStudentOverlayVisible = false;
   String? _expandedEntryId;
   late List<MutabaahEntry> _filteredEntries;
@@ -43,7 +42,7 @@ class _MutabaahPageState extends State<MutabaahPage> {
   void initState() {
     super.initState();
     _generateMockData();
-    _selectedProfile = _allMutabaahData[_selectedStudentName]!;
+    _selectedProfile = _allMutabaahData[StudentData.defaultStudent]!;
     _filterMutabaahEntries();
     _searchController.addListener(_filterMutabaahEntries);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -67,8 +66,12 @@ class _MutabaahPageState extends State<MutabaahPage> {
   }
 
   void _updateSelectedData() {
+    final selectedName = context.read<AuthProvider>().selectedStudent.isNotEmpty
+        ? context.read<AuthProvider>().selectedStudent
+        : StudentData.defaultStudent;
     setState(() {
-      _selectedProfile = _allMutabaahData[_selectedStudentName]!;
+      _selectedProfile = _allMutabaahData[selectedName] ??
+          _allMutabaahData[StudentData.defaultStudent]!;
       // Reset filters and search when student changes
       _searchController.clear();
       _selectedSortOrder = 'Terbaru';
@@ -151,7 +154,9 @@ class _MutabaahPageState extends State<MutabaahPage> {
               selectedItem: context.watch<AuthProvider>().selectedStudent,
               onItemSelected: (nama) async {
                 setState(() { _isStudentOverlayVisible = false; });
-                _updateSelectedData();
+                // 1) Simpan pilihan ke provider
+                try { context.read<AuthProvider>().selectStudent(nama); } catch (_) {}
+                // 2) Simpan siswa_id bila tersedia
                 final id = _nameToSiswaId[nama];
                 if (id != null && id.isNotEmpty) {
                   try {
@@ -159,13 +164,8 @@ class _MutabaahPageState extends State<MutabaahPage> {
                     await prefs.setString('siswa_id', id);
                   } catch (_) {}
                 }
-                try {
-                  // ignore: use_build_context_synchronously
-                  context.read<AuthProvider>().selectStudent(nama);
-                } catch (_) {}
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _loadMutabaah();
-                });
+                // 3) Refresh tampilan & data
+                _updateSelectedData();
               },
               onClose: () => setState(() => _isStudentOverlayVisible = false),
               searchHint: 'Cari santri...',
@@ -278,7 +278,9 @@ class _MutabaahPageState extends State<MutabaahPage> {
         selectedStudent: context.watch<AuthProvider>().selectedStudent,
         students: _allStudents.isEmpty ? [StudentData.defaultStudent] : _allStudents,
         onStudentChanged: (nama) async {
-          _updateSelectedData();
+          // 1) Update provider dulu
+          try { context.read<AuthProvider>().selectStudent(nama); } catch (_) {}
+          // 2) Simpan siswa_id
           final id = _nameToSiswaId[nama];
           if (id != null && id.isNotEmpty) {
             try {
@@ -286,13 +288,8 @@ class _MutabaahPageState extends State<MutabaahPage> {
               await prefs.setString('siswa_id', id);
             } catch (_) {}
           }
-          try {
-            // ignore: use_build_context_synchronously
-            context.read<AuthProvider>().selectStudent(nama);
-          } catch (_) {}
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _loadMutabaah();
-          });
+          // 3) Refresh UI & data
+          _updateSelectedData();
         },
         onOverlayVisibilityChanged: (visible) =>
             setState(() => _isStudentOverlayVisible = visible),

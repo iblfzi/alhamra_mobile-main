@@ -39,13 +39,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   void _saveProfile() {
     if (_formKey.currentState!.validate()) {
-      // TODO: Implementasi logika untuk menyimpan perubahan profil
-      // Contoh:
-      // final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      // await authProvider.updateUser(
-      //   fullName: _nameController.text,
-      //   phoneNumber: _phoneController.text,
-      // );
+  
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Profil berhasil diperbarui! (Simulasi)')),
@@ -63,7 +57,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     if (!_syncedFromUser && user != null) {
       _nameController.text = user.fullName;
       _emailController.text = user.email;
-      // phoneNumber mungkin tidak disediakan oleh API login
+      // phoneNumber
       if (user.phoneNumber.isNotEmpty) {
         _phoneController.text = user.phoneNumber;
       }
@@ -131,7 +125,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       radius: 50,
       showEditButton: true,
       onEditTap: () {
-        // TODO: Implementasi logika untuk memilih gambar
+        // Implementasi logika untuk memilih gambar
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Fitur ganti gambar belum tersedia.')),
         );

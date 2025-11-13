@@ -54,10 +54,9 @@ class UserAvatar extends StatelessWidget {
     // Cek apakah ada avatar dari Odoo (base64)
     if (user?.avatar128 != null && user!.avatar128!.isNotEmpty) {
       try {
-        // Decode base64 ke bytes
+        
         Uint8List bytes = base64Decode(user!.avatar128!);
 
-        // Deteksi SVG: coba decode sebagian sebagai teks dan cek tag <svg
         final sampleLength = bytes.length > 256 ? 256 : bytes.length;
         final sampleText = utf8.decode(bytes.sublist(0, sampleLength), allowMalformed: true).toLowerCase();
         final isSvg = sampleText.contains('<svg');
@@ -83,7 +82,7 @@ class UserAvatar extends StatelessWidget {
           );
         }
       } catch (e) {
-        // Jika error decode, gunakan default avatar
+        // Jika error, gunakan default avatar
         return _buildDefaultAvatar();
       }
     }
@@ -103,7 +102,7 @@ class UserAvatar extends StatelessWidget {
           style: TextStyle(
             color: AppStyles.primaryColor,
             fontWeight: FontWeight.bold,
-            fontSize: radius * 0.6, // Proporsi font terhadap radius
+            fontSize: radius * 0.6, 
           ),
         ),
       );

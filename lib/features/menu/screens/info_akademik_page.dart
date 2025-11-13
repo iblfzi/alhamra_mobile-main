@@ -3,10 +3,12 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'dart:io';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/data/class_data.dart';
 import '../../../core/data/student_data.dart';
 import '../../../core/models/academic_info_model.dart';
+import '../../../core/services/odoo_api_service.dart';
 import '../../../core/utils/app_styles.dart';
 import '../../shared/widgets/index.dart';
 import '../../shared/widgets/student_selection_widget.dart';
@@ -19,7 +21,7 @@ class InfoAkademikPage extends StatefulWidget {
 }
 
 class _InfoAkademikPageState extends State<InfoAkademikPage> {
-  // Mock Schedule Data
+  // Mock Schedule Data (tetap)
   final List<JadwalHarian> _jadwalPelajaran = [
     JadwalHarian(hari: 'Senin', pelajaran: [
       MataPelajaran(jam: '07:00 - 08:30', nama: 'Matematika'),
@@ -45,47 +47,171 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
     ]),
   ];
 
-  // Generate mock data for student profiles
-  final List<_StudentProfile> _allStudentData =
-      StudentData.allStudents.map((nama) {
-    int index = StudentData.allStudents.indexOf(nama);
-    // Mock academic info
-    final academicInfo = AcademicInfo(
-      studentId: (index + 1).toString(), // Example
-      kelas: 'IX 9',
-      semester: 1,
-      jumlahSiswa: 32,
-      // The schedule is the same for all students in this mock data
-      // In a real app, this would come from the student's class data
-      // For this example, we'll use the static schedule defined above.
-    );
-
-    // Mock personal info
-    return _StudentProfile(
-      id: (index + 1).toString(),
-      namaLengkap: nama,
-      namaPanggilan: nama.split(' ').first, // Simple logic for nickname
-      tempatLahir: ['Malang', 'Surabaya', 'Jakarta'][index % 3],
-      tanggalLahir: '22 Juli 200${4 + index}',
-      jenisKelamin: index % 2 == 0 ? 'Laki-Laki' : 'Perempuan',
-      avatarUrl: StudentData.getStudentAvatar(nama),
-      academicInfo: academicInfo,
-    );
-  }).toList();
-
-  late _StudentProfile _selectedStudentProfile;
+  // State dari API
+  final OdooApiService _odoo = OdooApiService();
+  Map<String, String> _nameToId = {};
+  List<String> _childrenNames = [];
   String _selectedStudentName = StudentData.defaultStudent;
+  String? _selectedSiswaId;
   bool _isStudentOverlayVisible = false;
+  bool _isLoading = true;
+  String? _error;
+
+  // Profil akademik yang ditampilkan
+  String _namaLengkap = '-';
+  String _namaPanggilan = '-';
+  String _tempatLahir = '-';
+  String _tanggalLahir = '-';
+  String _jenisKelamin = '-';
+  String _kelas = '-';
+  String _semester = '-';
+  String _jumlahSiswa = '-';
+  String _avatarUrl = '';
+  // Data sekolah tambahan
+  String _nis = '';
+  String _nisn = '';
+  String _tahunAjaran = '';
+  String _kelasRuang = '';
+  String _jenjang = '';
+  String _tingkat = '';
+  String _musyrif = '';
+  String _kamar = '';
+  String _halaqoh = '';
+  String _penanggungJawab = '';
 
   @override
   void initState() {
     super.initState();
-    _updateSelectedData();
+    _initLoad();
   }
 
-  void _updateSelectedData() {
-    _selectedStudentProfile = _allStudentData
-        .firstWhere((student) => student.namaLengkap == _selectedStudentName);
+  Future<void> _initLoad() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      // Ambil siswa_id yang terakhir dipilih
+      final prefs = await SharedPreferences.getInstance();
+      final savedSiswaId = prefs.getString('siswa_id');
+
+      // Ambil daftar anak dari server untuk peta nama→id
+      final children = await _odoo.getChildren();
+      _nameToId.clear();
+      final names = <String>[];
+      for (final c in children) {
+        final name = (c['name'] ?? c['nama'] ?? '').toString();
+        final id = (c['siswa_id'] ?? c['student_id'] ?? c['id'])?.toString() ?? '';
+        if (name.isNotEmpty && id.isNotEmpty) {
+          names.add(name);
+          _nameToId[name] = id;
+        }
+      }
+
+      // Tentukan yang dipilih berdasar siswa_id atau pakai pertama
+      String? selectedName;
+      if (savedSiswaId != null && savedSiswaId.isNotEmpty) {
+        selectedName = _nameToId.entries.firstWhere(
+          (e) => e.value == savedSiswaId,
+          orElse: () => const MapEntry('', ''),
+        ).key;
+      }
+      if (selectedName == null || selectedName.isEmpty) {
+        selectedName = names.isNotEmpty ? names.first : _selectedStudentName;
+      }
+
+      setState(() {
+        _childrenNames = names.isEmpty ? [StudentData.defaultStudent] : names;
+        _selectedStudentName = selectedName!;
+        _selectedSiswaId = _nameToId[_selectedStudentName];
+      });
+
+      // Fetch profil akademik
+      await _loadProfile();
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  Future<void> _loadProfile() async {
+    try {
+      final idStr = _selectedSiswaId;
+      if (idStr == null || idStr.isEmpty) {
+        setState(() {
+          _isLoading = false;
+          _error = 'Siswa belum dipilih.';
+        });
+        return;
+      }
+      final id = int.tryParse(idStr) ?? -1;
+      if (id < 0) {
+        setState(() {
+          _isLoading = false;
+          _error = 'ID siswa tidak valid.';
+        });
+        return;
+      }
+
+      final data = await _odoo.getStudentProfile(id);
+
+      String g = (data['gender'] ?? data['jenis_kelamin'] ?? data['jns_kelamin'] ?? '-').toString();
+      if (g.isNotEmpty && g != '-') {
+        final low = g.toLowerCase();
+        if (low == 'l' || low.startsWith('m')) g = 'Laki-Laki';
+        if (low == 'p' || low.startsWith('f') || low.contains('perem')) g = 'Perempuan';
+      }
+
+      String pick(dynamic v) => (v == null || v == false) ? '' : v.toString();
+      String pickPair(dynamic v) {
+        if (v is List && v.length > 1) {
+          final s = v[1];
+          return s?.toString() ?? '';
+        }
+        return v is String ? v : '';
+      }
+
+      setState(() {
+        _namaLengkap = (data['name'] ?? data['nama'] ?? _selectedStudentName).toString();
+        _namaPanggilan = (data['nickname'] ?? data['nama_panggilan'] ?? data['nama_pgl'] ?? _selectedStudentName.split(' ').first).toString();
+        _tempatLahir = (data['birth_place'] ?? data['tempat_lahir'] ?? data['tmp_lahir'] ?? '-').toString();
+        _tanggalLahir = (data['birth_date'] ?? data['tanggal_lahir'] ?? data['tgl_lahir'] ?? '-').toString();
+        _jenisKelamin = g.isEmpty ? '-' : g;
+        // Kelas: coba string langsung, lalu pair id-name
+        String kelasStr = (data['class_name'] ?? data['kelas_name'] ?? data['kelas'] ?? data['rombel_name'] ?? data['rombel'] ?? '').toString();
+        if (kelasStr.isEmpty) kelasStr = pickPair(data['rombel_id']);
+        if (kelasStr.isEmpty) kelasStr = pickPair(data['kelas_id']);
+        if (kelasStr.isEmpty) kelasStr = pickPair(data['ruang_kelas_id']);
+        _kelas = kelasStr.isEmpty ? '-' : kelasStr;
+        // Semester: string atau pair
+        String semStr = (data['semester'] ?? data['semester_name'] ?? data['semester_ke'] ?? '').toString();
+        if (semStr.isEmpty) semStr = pickPair(data['semester_id']);
+        _semester = semStr;
+        // Jumlah siswa: banyak variasi nama
+        String jml = (data['students_count'] ?? data['jumlah_siswa'] ?? data['jumlah_santri'] ?? data['rombel_student_count'] ?? data['rombel_siswa_count'] ?? data['class_size'] ?? data['student_count'] ?? '').toString();
+        _jumlahSiswa = jml;
+        _avatarUrl = (data['avatar'] ?? data['avatar_url'] ?? '').toString();
+        // Data sekolah tambahan
+        _nis = (data['nis'] ?? data['NIS'] ?? '').toString();
+        _nisn = (data['nisn'] ?? '').toString();
+        _tahunAjaran = pickPair(data['tahunajaran_id']);
+        _kelasRuang = pickPair(data['ruang_kelas_id']);
+        _jenjang = pick(data['jenjang'] ?? data['jenjang_name']);
+        _tingkat = pickPair(data['tingkat']);
+        _musyrif = pickPair(data['musyrif_id']);
+        _kamar = pickPair(data['kamar_id']);
+        _halaqoh = pickPair(data['halaqoh_id']);
+        _penanggungJawab = pickPair(data['penanggung_jawab_id']);
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _error = e.toString();
+      });
+    }
   }
 
   @override
@@ -112,7 +238,28 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
                       topRight: Radius.circular(30),
                     ),
                   ),
-                  child: _buildAcademicDetails(),
+                  child: _isLoading
+                      ? const Center(child: CircularProgressIndicator(color: AppStyles.primaryColor))
+                      : _error != null
+                          ? Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(24.0),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.error_outline, size: 48, color: Colors.grey[400]),
+                                    const SizedBox(height: 12),
+                                    Text(_error!, textAlign: TextAlign.center),
+                                    const SizedBox(height: 12),
+                                    ElevatedButton(
+                                      onPressed: _initLoad,
+                                      child: const Text('Coba Lagi'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            )
+                          : _buildAcademicDetails(),
                 ),
               ),
             ],
@@ -121,14 +268,22 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
             SearchOverlayWidget(
               isVisible: _isStudentOverlayVisible,
               title: 'Pilih Santri',
-              items: StudentData.allStudents,
+              items: _childrenNames.isEmpty ? [StudentData.defaultStudent] : _childrenNames,
               selectedItem: _selectedStudentName,
-              onItemSelected: (nama) {
+              onItemSelected: (nama) async {
+                final id = _nameToId[nama];
+                if (id != null && id.isNotEmpty) {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString('siswa_id', id);
+                }
                 setState(() {
                   _selectedStudentName = nama;
-                  _updateSelectedData();
+                  _selectedSiswaId = id;
                   _isStudentOverlayVisible = false;
+                  _isLoading = true;
+                  _error = null;
                 });
+                await _loadProfile();
               },
               onClose: () => setState(() => _isStudentOverlayVisible = false),
               searchHint: 'Cari santri...',
@@ -139,20 +294,30 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
     );
   }
 
+  
+
   Widget _buildStudentSelector() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4.0),
       child: StudentSelectionWidget(
         selectedStudent: _selectedStudentName,
-        students: StudentData.allStudents,
-        onStudentChanged: (nama) {
+        students: _childrenNames.isEmpty ? [StudentData.defaultStudent] : _childrenNames,
+        onStudentChanged: (nama) async {
+          final id = _nameToId[nama];
+          if (id != null && id.isNotEmpty) {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('siswa_id', id);
+          }
           setState(() {
             _selectedStudentName = nama;
-            _updateSelectedData();
+            _selectedSiswaId = id;
+            _isLoading = true;
+            _error = null;
           });
+          await _loadProfile();
         },
         onOverlayVisibilityChanged: (visible) => setState(() => _isStudentOverlayVisible = visible),
-        avatarUrl: StudentData.getStudentAvatar(_selectedStudentName),
+        avatarUrl: _avatarUrl.isNotEmpty ? _avatarUrl : StudentData.getStudentAvatar(_selectedStudentName),
       ),
     );
   }
@@ -166,8 +331,7 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
           _buildDataDiriCard(),
           const SizedBox(height: 24),
           _buildKelasCard(),
-          const SizedBox(height: 24),
-          _buildJadwalPelajaranCard(),
+          // Jadwal kelas dilewati sementara
         ],
       ),
     );
@@ -181,17 +345,39 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
         children: [
           Text('Data Diri Santri', style: AppStyles.sectionTitle(context)),
           const SizedBox(height: 16),
-          _buildDetailRow('Nama Lengkap', _selectedStudentProfile.namaLengkap),
+          _buildDetailRow('Nama Lengkap', _namaLengkap),
           const Divider(height: 24),
-          _buildDetailRow('Nama Panggilan', _selectedStudentProfile.namaPanggilan),
+          _buildDetailRow('Nama Panggilan', _namaPanggilan),
           const Divider(height: 24),
-          _buildDetailRow('Tempat Lahir', _selectedStudentProfile.tempatLahir),
+          _buildDetailRow('Tempat Lahir', _tempatLahir),
           const Divider(height: 24),
-          _buildDetailRow('Tanggal Lahir', _selectedStudentProfile.tanggalLahir),
+          _buildDetailRow('Tanggal Lahir', _tanggalLahir),
           const Divider(height: 24),
-          _buildDetailRow('Jenis Kelamin', _selectedStudentProfile.jenisKelamin),
-      ],
-    ));
+          _buildDetailRow('Jenis Kelamin', _jenisKelamin),
+          // Data sekolah digabungkan ke Data Diri
+          const Divider(height: 24),
+          _buildDetailRow('NIS', _nis.isEmpty ? '-' : _nis),
+          const Divider(height: 24),
+          _buildDetailRow('NISN', _nisn.isEmpty ? '-' : _nisn),
+          const Divider(height: 24),
+          _buildDetailRow('Tahun Ajaran', _tahunAjaran.isEmpty ? '-' : _tahunAjaran),
+          const Divider(height: 24),
+          _buildDetailRow('Kelas/Ruang', _kelasRuang.isEmpty ? '-' : _kelasRuang),
+          const Divider(height: 24),
+          _buildDetailRow('Jenjang', _jenjang.isEmpty ? '-' : _jenjang),
+          const Divider(height: 24),
+          _buildDetailRow('Tingkat', _tingkat.isEmpty ? '-' : _tingkat),
+          const Divider(height: 24),
+          _buildDetailRow('Musyrif', _musyrif.isEmpty ? '-' : _musyrif),
+          const Divider(height: 24),
+          _buildDetailRow('Kamar', _kamar.isEmpty ? '-' : _kamar),
+          const Divider(height: 24),
+          _buildDetailRow('Halaqoh', _halaqoh.isEmpty ? '-' : _halaqoh),
+          const Divider(height: 24),
+          _buildDetailRow('Penanggung Jawab', _penanggungJawab.isEmpty ? '-' : _penanggungJawab),
+        ],
+      ),
+    );
   }
 
   Widget _buildKelasCard() {
@@ -203,14 +389,11 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
           Text('Data Kelas Yang Ditempati Anak',
               style: AppStyles.sectionTitle(context)),
           const SizedBox(height: 16),
-          _buildDetailRow(
-              'Kelas', _selectedStudentProfile.academicInfo.kelas ?? '-'),
+          _buildDetailRow('Kelas', _kelas),
           const Divider(height: 24),
-          _buildDetailRow('Semester',
-              _selectedStudentProfile.academicInfo.semester?.toString() ?? '-'),
+          _buildDetailRow('Semester', _semester.isEmpty ? '-' : _semester),
           const Divider(height: 24),
-          _buildDetailRow('Jumlah Siswa',
-              _selectedStudentProfile.academicInfo.jumlahSiswa?.toString() ?? '-'),
+          _buildDetailRow('Jumlah Siswa', _jumlahSiswa.isEmpty ? '-' : _jumlahSiswa),
           const SizedBox(height: 16),
           Align(
             alignment: Alignment.centerRight,
@@ -219,7 +402,7 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
                 // Navigate to a new page showing class details
                 Navigator.of(context).push(MaterialPageRoute(
                   builder: (context) => DetailKelasPage(
-                    className: _selectedStudentProfile.academicInfo.kelas ?? 'Kelas',
+                    className: _kelas.isEmpty ? 'Kelas' : _kelas,
                   ),
                 ));
               },
@@ -237,21 +420,6 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildJadwalPelajaranCard() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Jadwal Pelajaran',
-            style: AppStyles.sectionTitle(context)
-                .copyWith(fontSize: 16, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 16),
-        ..._jadwalPelajaran.map((jadwalHarian) {
-          return _buildDailySchedule(jadwalHarian);
-        }),
-      ],
     );
   }
 
@@ -333,37 +501,29 @@ class _InfoAkademikPageState extends State<InfoAkademikPage> {
 
   Widget _buildDetailRow(String label, String value) {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(label, style: AppStyles.bodyText(context).copyWith(color: Colors.grey[600])),
-        Text(value, style: AppStyles.bodyText(context).copyWith(fontWeight: FontWeight.bold, fontSize: 16)),
+        Text(
+          label,
+          style: AppStyles.bodyText(context).copyWith(color: Colors.grey[600]),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            value,
+            textAlign: TextAlign.right,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: AppStyles.bodyText(context)
+                .copyWith(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+        ),
       ],
     );
   }
 }
 
 // A private model class to hold all student data, including personal and academic.
-class _StudentProfile {
-  final String id;
-  final String namaLengkap;
-  final String namaPanggilan;
-  final String tempatLahir;
-  final String tanggalLahir;
-  final String jenisKelamin;
-  final String avatarUrl;
-  final AcademicInfo academicInfo;
-
-  _StudentProfile({
-    required this.id,
-    required this.namaLengkap,
-    required this.namaPanggilan,
-    required this.tempatLahir,
-    required this.tanggalLahir,
-    required this.jenisKelamin,
-    required this.avatarUrl,
-    required this.academicInfo,
-  });
-}
+// Model mock AcademicInfo tetap dipakai untuk jadwal saja
 
 /// A new page to display the list of students in a class.
 class DetailKelasPage extends StatelessWidget {

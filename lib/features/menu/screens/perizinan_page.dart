@@ -1,9 +1,12 @@
 import 'package:alhamra_1/features/shared/widgets/student_selection_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/data/perizinan_service.dart';
 import '../../../core/models/perizinan_history.dart';
-
+import '../../../core/services/odoo_api_service.dart';
+import '../../../core/providers/auth_provider.dart';
 import '../../../core/data/student_data.dart';
 import '../../../core/utils/app_styles.dart';
 import '../../shared/widgets/index.dart';
@@ -22,6 +25,10 @@ class _PerizinanPageState extends State<PerizinanPage> {
   bool _loading = false;
   String? _errorMessage;
   List<PerizinanHistory> _riwayat = [];
+  bool _submitting = false;
+  List<String> _allStudents = const [];
+  final Map<String, String> _nameToSiswaId = {};
+  final OdooApiService _odoo = OdooApiService();
 
   // --- Form State ---
   final _formKey = GlobalKey<FormState>();
@@ -34,7 +41,10 @@ class _PerizinanPageState extends State<PerizinanPage> {
   @override
   void initState() {
     super.initState();
-    _fetchRiwayat();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _loadChildrenAndInitSelection();
+      await _fetchRiwayat();
+    });
   }
 
   @override
@@ -65,6 +75,51 @@ class _PerizinanPageState extends State<PerizinanPage> {
     }
   }
 
+  Future<void> _loadChildrenAndInitSelection() async {
+    try {
+      final children = await _odoo.getChildren();
+      final names = <String>[];
+      _nameToSiswaId.clear();
+      for (final c in children) {
+        final map = Map<String, dynamic>.from(c);
+        final name = (map['name'] ?? map['nama'] ?? '').toString();
+        final idVal = map['id'] ?? map['siswa_id'] ?? map['siswaId'];
+        final siswaId = idVal?.toString() ?? '';
+        if (name.isNotEmpty) {
+          names.add(name);
+          if (siswaId.isNotEmpty) _nameToSiswaId[name] = siswaId;
+        }
+      }
+      setState(() {
+        _allStudents = names.isEmpty ? [StudentData.defaultStudent] : names;
+      });
+
+      // Sinkronkan pilihan awal dengan AuthProvider/prefs
+      final auth = context.read<AuthProvider>();
+      final prefs = await SharedPreferences.getInstance();
+      final savedSiswaId = prefs.getString('siswa_id');
+      String initialName = auth.selectedStudent.isNotEmpty
+          ? auth.selectedStudent
+          : (_allStudents.isNotEmpty ? _allStudents.first : StudentData.defaultStudent);
+      if (savedSiswaId != null && savedSiswaId.isNotEmpty) {
+        final byName = _nameToSiswaId.entries
+            .firstWhere((e) => e.value == savedSiswaId, orElse: () => const MapEntry('', ''))
+            .key;
+        if (byName.isNotEmpty) initialName = byName;
+      }
+      setState(() { _selectedStudentName = initialName; });
+      if (auth.selectedStudent != initialName) {
+        try { auth.selectStudent(initialName); } catch (_) {}
+      }
+      final id = _nameToSiswaId[initialName];
+      if (id != null && id.isNotEmpty) {
+        try { await prefs.setString('siswa_id', id); } catch (_) {}
+      }
+    } catch (e) {
+      // fallback: keep default student
+    }
+  }
+
   void _updateSelectedData() {
     // Reset form when student changes
     setState(() {
@@ -77,17 +132,50 @@ class _PerizinanPageState extends State<PerizinanPage> {
     _fetchRiwayat();
   }
 
-  void _submitPerizinan() {
-    if (_formKey.currentState!.validate()) {
-      // Form is valid, process the data
+  Future<void> _submitPerizinan() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (_tanggalJemput == null || _tanggalKembali == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-              'Formulir perizinan untuk $_selectedStudentName telah diajukan.'),
-          backgroundColor: Colors.green,
-        ),
+        const SnackBar(content: Text('Tanggal penjemputan dan tanggal kembali wajib diisi')),
       );
-      Navigator.pop(context);
+      return;
+    }
+    if (_tanggalKembali!.isBefore(_tanggalJemput!)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Tanggal kembali harus setelah atau sama dengan tanggal penjemputan')),
+      );
+      return;
+    }
+
+    setState(() { _submitting = true; });
+    try {
+      await _service.submitPerizinan(
+        keperluan: _keperluanController.text.trim(),
+        penjemput: _penjemputController.text.trim(),
+        tglIjin: _tanggalJemput!,
+        tglKembali: _tanggalKembali!,
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pengajuan perizinan berhasil dikirim')),
+      );
+      // Reset form dan refresh riwayat
+      setState(() {
+        _formKey.currentState?.reset();
+        _keperluanController.clear();
+        _penjemputController.clear();
+        _tanggalJemput = null;
+        _tanggalKembali = null;
+      });
+      await _fetchRiwayat();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Gagal mengajukan perizinan: $e')),
+      );
+    } finally {
+      if (mounted) setState(() { _submitting = false; });
     }
   }
 
@@ -125,18 +213,30 @@ class _PerizinanPageState extends State<PerizinanPage> {
             SearchOverlayWidget(
               isVisible: _isStudentOverlayVisible,
               title: 'Pilih Santri',
-              items: StudentData.allStudents,
-              selectedItem: _selectedStudentName,
-              onItemSelected: (nama) {
-                setState(() {
-                  _selectedStudentName = nama;
-                  _updateSelectedData();
-                  _isStudentOverlayVisible = false;
-                });
+              items: _allStudents.isEmpty ? [StudentData.defaultStudent] : _allStudents,
+              selectedItem: context.watch<AuthProvider>().selectedStudent.isEmpty
+                  ? _selectedStudentName
+                  : context.watch<AuthProvider>().selectedStudent,
+              onItemSelected: (nama) async {
+                setState(() { _isStudentOverlayVisible = false; });
+                // 1) Update provider
+                try { context.read<AuthProvider>().selectStudent(nama); } catch (_) {}
+                // 2) Persist siswa_id jika ada
+                final id = _nameToSiswaId[nama];
+                if (id != null && id.isNotEmpty) {
+                  try { final prefs = await SharedPreferences.getInstance(); await prefs.setString('siswa_id', id); } catch (_) {}
+                }
+                // 3) Update UI & data
+                setState(() { _selectedStudentName = nama; });
+                _updateSelectedData();
               },
               onClose: () => setState(() => _isStudentOverlayVisible = false),
               searchHint: 'Cari santri...',
-              avatarUrl: StudentData.getStudentAvatar(_selectedStudentName),
+              avatarUrl: StudentData.getStudentAvatar(
+                context.watch<AuthProvider>().selectedStudent.isEmpty
+                    ? _selectedStudentName
+                    : context.watch<AuthProvider>().selectedStudent,
+              ),
             ),
         ],
       ),
@@ -147,17 +247,29 @@ class _PerizinanPageState extends State<PerizinanPage> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4.0),
       child: StudentSelectionWidget(
-        selectedStudent: _selectedStudentName,
-        students: StudentData.allStudents,
-        onStudentChanged: (nama) {
-          setState(() {
-            _selectedStudentName = nama;
-            _updateSelectedData();
-          });
+        selectedStudent: context.watch<AuthProvider>().selectedStudent.isEmpty
+            ? _selectedStudentName
+            : context.watch<AuthProvider>().selectedStudent,
+        students: _allStudents.isEmpty ? [StudentData.defaultStudent] : _allStudents,
+        onStudentChanged: (nama) async {
+          // 1) Update provider
+          try { context.read<AuthProvider>().selectStudent(nama); } catch (_) {}
+          // 2) Persist siswa_id jika tersedia
+          final id = _nameToSiswaId[nama];
+          if (id != null && id.isNotEmpty) {
+            try { final prefs = await SharedPreferences.getInstance(); await prefs.setString('siswa_id', id); } catch (_) {}
+          }
+          // 3) Update UI & data
+          setState(() { _selectedStudentName = nama; });
+          _updateSelectedData();
         },
         onOverlayVisibilityChanged: (visible) =>
             setState(() => _isStudentOverlayVisible = visible),
-        avatarUrl: StudentData.getStudentAvatar(_selectedStudentName),
+        avatarUrl: StudentData.getStudentAvatar(
+          context.watch<AuthProvider>().selectedStudent.isEmpty
+              ? _selectedStudentName
+              : context.watch<AuthProvider>().selectedStudent,
+        ),
       ),
     );
   }
@@ -225,7 +337,7 @@ class _PerizinanPageState extends State<PerizinanPage> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _submitPerizinan,
+                onPressed: _submitting ? null : _submitPerizinan,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppStyles.primaryColor,
                   foregroundColor: Colors.white,
@@ -234,9 +346,14 @@ class _PerizinanPageState extends State<PerizinanPage> {
                     borderRadius: BorderRadius.circular(12),
                   ),
                 ),
-                child: const Text('Ajukan Perizinan',
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                child: _submitting
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Text('Ajukan Perizinan',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ),
             ),
             const SizedBox(height: 28),

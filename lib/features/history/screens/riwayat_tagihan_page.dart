@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/utils/app_styles.dart';
 import '../../../core/models/bill.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../core/data/payment_service.dart';
+import '../../../core/services/odoo_api_service.dart';
 import 'detail_tagihan_page.dart';
 import '../../shared/widgets/history_filter_widget.dart';
 
@@ -28,58 +31,15 @@ class _RiwayatTagihanPageState extends State<RiwayatTagihanPage> {
     'Lainnya': true,
   };
   
-  // Sample bill data with varied content
-  final List<Bill> _allBills = [
-    Bill(
-      id: 'INV/083/329382',
-      title: 'Seragam Sekolah XL Kelas 12',
-      subtitle: 'Tenggat Bayar : 22 Juli 2025, 23:59 WIB',
-      amount: 1200000,
-      dueDate: DateTime(2025, 7, 22, 23, 59),
-      status: BillStatus.paid,
-      period: 'Juli 2025',
-    ),
-    Bill(
-      id: 'INV/084/329383',
-      title: 'SPP Bulan Agustus 2025',
-      subtitle: 'Tenggat Bayar : 15 Agustus 2025, 23:59 WIB',
-      amount: 850000,
-      dueDate: DateTime(2025, 8, 15, 23, 59),
-      status: BillStatus.unpaid,
-      period: 'Agustus 2025',
-    ),
-    Bill(
-      id: 'INV/085/329384',
-      title: 'Makan Siang Bulan Juli',
-      subtitle: 'Tenggat Bayar : 30 Juli 2025, 23:59 WIB',
-      amount: 450000,
-      dueDate: DateTime(2025, 7, 30, 23, 59),
-      status: BillStatus.paid,
-      period: 'Juli 2025',
-    ),
-    Bill(
-      id: 'INV/086/329385',
-      title: 'Buku Pelajaran Semester 1',
-      subtitle: 'Tenggat Bayar : 10 Agustus 2025, 23:59 WIB',
-      amount: 750000,
-      dueDate: DateTime(2025, 8, 10, 23, 59),
-      status: BillStatus.unpaid,
-      period: 'Agustus 2025',
-    ),
-    Bill(
-      id: 'INV/087/329386',
-      title: 'Kegiatan Ekstrakurikuler',
-      subtitle: 'Tenggat Bayar : 25 Juli 2025, 23:59 WIB',
-      amount: 300000,
-      dueDate: DateTime(2025, 7, 25, 23, 59),
-      status: BillStatus.paid,
-      period: 'Juli 2025',
-    ),
-  ];
+  // Server data
+  List<Bill> _allBills = [];
+  bool _isLoading = true;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
+    _loadPaidBills();
   }
 
   String _getBillCategory(Bill bill) {
@@ -90,6 +50,64 @@ class _RiwayatTagihanPageState extends State<RiwayatTagihanPage> {
     if (t.contains('buku')) return 'Buku';
     if (t.contains('kegiatan') || t.contains('ekstrakurikuler')) return 'Kegiatan';
     return 'Lainnya';
+  }
+
+  Future<void> _loadPaidBills() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      String? sessionId;
+      String? siswaId;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        sessionId = prefs.getString('session_id') ?? prefs.getString('odoo_session_id');
+        siswaId = prefs.getString('siswa_id');
+      } catch (_) {}
+
+      if (sessionId == null || sessionId.isEmpty || siswaId == null || siswaId.isEmpty) {
+        try {
+          final odoo = OdooApiService();
+          await odoo.loadSession();
+          sessionId = odoo.sessionId;
+          final children = await odoo.getChildren();
+          if (children.isNotEmpty) {
+            final first = children.first;
+            siswaId = (first['siswa_id'] ?? first['student_id'] ?? first['id']).toString();
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('siswa_id', siswaId);
+          }
+        } catch (_) {}
+      }
+
+      if (sessionId == null || sessionId.isEmpty || siswaId == null || siswaId.isEmpty) {
+        setState(() {
+          _allBills = [];
+          _isLoading = false;
+          _error = 'Tidak dapat menemukan sesi atau siswa.';
+        });
+        return;
+      }
+
+      final service = PaymentService();
+      final bills = await service.fetchBillsForSiswa(
+        sessionId: sessionId,
+        siswaId: siswaId,
+        status: BillStatus.paid,
+        page: 1,
+        limit: 50,
+      );
+      setState(() {
+        _allBills = bills;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _error = e.toString();
+      });
+    }
   }
 
   void _showFilterDialog() {
@@ -270,14 +288,30 @@ class _RiwayatTagihanPageState extends State<RiwayatTagihanPage> {
           
           // Transaction list
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: _filteredBills.length,
-              itemBuilder: (context, index) {
-                final bill = _filteredBills[index];
-                return _buildTransactionItem(bill);
-              },
-            ),
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator(color: AppStyles.primaryColor))
+                : RefreshIndicator(
+                    color: AppStyles.primaryColor,
+                    onRefresh: _loadPaidBills,
+                    child: _error != null
+                        ? ListView(
+                            padding: const EdgeInsets.all(16),
+                            children: [
+                              Text(
+                                'Gagal memuat data: $_error',
+                                style: const TextStyle(fontFamily: 'Poppins'),
+                              ),
+                            ],
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: _filteredBills.length,
+                            itemBuilder: (context, index) {
+                              final bill = _filteredBills[index];
+                              return _buildTransactionItem(bill);
+                            },
+                          ),
+                  ),
           ),
         ],
       ),
