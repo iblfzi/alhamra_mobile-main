@@ -5,6 +5,11 @@ import '../../core/localization/app_localizations.dart';
 import '../shared/widgets/search_overlay_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../../core/data/payment_service.dart';
+import '../../core/services/odoo_api_service.dart';
+import '../../core/data/pocket_money_service.dart';
+import '../../core/models/pocket_money_history.dart';
 
 class BerandaAllPage extends StatefulWidget {
   const BerandaAllPage({super.key});
@@ -21,12 +26,98 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
   String _selectedSantri = StudentData.defaultStudent;
   final List<String> _allSantri = StudentData.allStudents;
   bool _isStudentOverlayVisible = false;
+  String _amountTagihan = 'Rp 0';
+  String _amountUangSaku = 'Rp 0';
+  double _persentaseLunas = 0.0; // 0..100
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
     _dashboardData = DashboardData.getSampleData();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadBillsTotal();
+      _loadPocketMoneyTotal();
+    });
+  }
+
+  Future<void> _loadBillsTotal() async {
+    try {
+      String? sessionId;
+      String? siswaId;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        sessionId = prefs.getString('session_id');
+        siswaId = prefs.getString('siswa_id');
+        sessionId ??= prefs.getString('odoo_session_id');
+      } catch (_) {}
+
+      if (sessionId == null || sessionId.isEmpty) {
+        try {
+          final odoo = OdooApiService();
+          await odoo.loadSession();
+          sessionId = odoo.sessionId;
+        } catch (_) {}
+      }
+      if (siswaId == null || siswaId.isEmpty) {
+        try {
+          final odoo = OdooApiService();
+          await odoo.loadSession();
+          final children = await odoo.getChildren();
+          if (children.isNotEmpty) {
+            siswaId = children.first['id'].toString();
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('siswa_id', siswaId);
+          }
+        } catch (_) {}
+      }
+      if (sessionId == null || siswaId == null) return;
+
+      final service = PaymentService();
+      final bills = await service.fetchBillsForSiswa(
+        sessionId: sessionId,
+        siswaId: siswaId,
+        page: 1,
+        limit: 50,
+      );
+      final totalOutstanding = bills
+          .where((b) => b.isPayable)
+          .fold<int>(0, (p, b) => p + b.outstanding);
+      final int sumTotal = bills.fold<int>(0, (p, b) => p + b.amount);
+      final int sumPaid = bills.fold<int>(0, (p, b) => p + (b.amountPaid ?? 0));
+      final double percentPaid = (sumTotal > 0)
+          ? (sumPaid / sumTotal) * 100.0
+          : 0.0;
+      if (!mounted) return;
+      setState(() {
+        _amountTagihan = _formatRupiah(totalOutstanding);
+        _persentaseLunas = percentPaid.clamp(0.0, 100.0);
+      });
+    } catch (_) {}
+  }
+
+  String _formatRupiah(int amount) {
+    final s = amount.toString();
+    final reg = RegExp(r'\B(?=(\d{3})+(?!\d))');
+    return 'Rp ${s.replaceAllMapped(reg, (m) => '.')}';
+  }
+
+  Future<void> _loadPocketMoneyTotal() async {
+    try {
+      final pocketService = PocketMoneyService();
+      final pocket = await pocketService.fetchTransactions(page: 1, limit: 1000);
+      final totalIn = pocket
+          .where((t) => t.type == PocketMoneyTransactionType.incoming)
+          .fold<int>(0, (p, e) => p + e.amount);
+      final totalOut = pocket
+          .where((t) => t.type == PocketMoneyTransactionType.outgoing)
+          .fold<int>(0, (p, e) => p + e.amount);
+      final balance = totalIn - totalOut;
+      if (!mounted) return;
+      setState(() {
+        _amountUangSaku = _formatRupiah(balance < 0 ? 0 : balance);
+      });
+    } catch (_) {}
   }
 
   @override
@@ -91,6 +182,8 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
                 _selectedSantri = santri;
                 _isStudentOverlayVisible = false;
               });
+              _loadBillsTotal();
+              _loadPocketMoneyTotal();
             },
             onClose: () {
               setState(() {
@@ -341,7 +434,7 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    data.totalTagihan,
+                    _amountTagihan,
                     style: AppStyles.heading1(context).copyWith(
                       color: const Color(0xFFD32F2F),
                     ),
@@ -372,7 +465,7 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          data.saldoUangSaku,
+                          _amountUangSaku,
                           style: AppStyles.saldoValue(context).copyWith(
                             color: const Color(0xFF2E7D32),
                           ),
@@ -428,7 +521,7 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  '${localizations.lunas} ${data.persentaseLunas.toInt()}%',
+                  '${localizations.lunas} ${_persentaseLunas.toInt()}%',
                   style: AppStyles.sectionTitle(context),
                 ),
                 const SizedBox(width: 24),
@@ -442,7 +535,7 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  '${localizations.kurang} ${(100 - data.persentaseLunas).toInt()}%',
+                  '${localizations.kurang} ${(100 - _persentaseLunas).toInt()}%',
                   style: AppStyles.sectionTitle(context),
                 ),
               ],
@@ -458,7 +551,7 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
               child: Row(
                 children: [
                   Expanded(
-                    flex: data.persentaseLunas.toInt(),
+                    flex: _persentaseLunas.toInt(),
                     child: Container(
                       decoration: const BoxDecoration(
                         color: Color(0xFF2196F3),
@@ -470,7 +563,7 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
                     ),
                   ),
                   Expanded(
-                    flex: (100 - data.persentaseLunas).toInt(),
+                    flex: (100 - _persentaseLunas).toInt(),
                     child: Container(
                       decoration: const BoxDecoration(
                         color: Color(0xFFFF5252),
@@ -495,8 +588,8 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
                     sections: [
                       PieChartSectionData(
                         color: const Color(0xFF2196F3),
-                        value: data.persentaseLunas,
-                        title: '${localizations.lunas}\n${data.persentaseLunas.toInt()}%',
+                        value: _persentaseLunas,
+                        title: '${localizations.lunas}\n${_persentaseLunas.toInt()}%',
                         radius: 80,
                         titleStyle: AppStyles.sectionTitle(context).copyWith(
                           color: Colors.white,
@@ -506,8 +599,8 @@ class _BerandaAllPageState extends State<BerandaAllPage> with SingleTickerProvid
                       ),
                       PieChartSectionData(
                         color: const Color(0xFFFF5252),
-                        value: 100 - data.persentaseLunas,
-                        title: '${localizations.kurang}\n${(100 - data.persentaseLunas).toInt()}%',
+                        value: 100 - _persentaseLunas,
+                        title: '${localizations.kurang}\n${(100 - _persentaseLunas).toInt()}%',
                         radius: 80,
                         titleStyle: AppStyles.sectionTitle(context).copyWith(
                           color: Colors.white,
