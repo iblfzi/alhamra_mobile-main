@@ -390,6 +390,10 @@ class _AktivitasPageState extends State<AktivitasPage> with TickerProviderStateM
         if (name.isNotEmpty && id.isNotEmpty) {
           names.add(name);
           _nameToSiswaId[name] = id;
+          if (!_allAktivitasData.containsKey(name)) {
+            final seed = (_allAktivitasData.length + 1).toString();
+            _allAktivitasData[name] = _createMockProfile(seed);
+          }
         }
       }
       if (!mounted) return;

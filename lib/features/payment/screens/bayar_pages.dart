@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/utils/app_styles.dart';
 import '../../../core/data/student_data.dart';
 import '../../../core/models/bill.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../core/providers/auth_provider.dart';
+import '../../../core/services/odoo_api_service.dart';
 import '../../shared/widgets/index.dart';
 import '../../shared/widgets/student_selection_widget.dart';
 import 'custom_status_menunggu_page.dart';
@@ -22,8 +25,10 @@ class _StatusPageState extends State<StatusPage> with TickerProviderStateMixin {
   late TabController _tabController;
   final ScrollController _listController = ScrollController();
   String _selectedStudent = StudentData.defaultStudent;
-  final List<String> _students = StudentData.allStudents;
+  List<String> _students = const [];
+  final Map<String, String> _nameToSiswaId = {};
   bool _isStudentOverlayVisible = false;
+  bool _isLoadingStudents = false;
   
   // Filter state variables
   String _selectedSortOrder = 'Terbaru';
@@ -101,12 +106,97 @@ class _StatusPageState extends State<StatusPage> with TickerProviderStateMixin {
         _scrollListToTop();
       }
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadStudents();
+    });
   }
 
   void _onStudentChanged(String student) {
+    _syncSelectedStudent(student, persistId: false);
+  }
+
+  Future<void> _loadStudents() async {
+    setState(() {
+      _isLoadingStudents = true;
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedId = prefs.getString('siswa_id');
+      final odoo = OdooApiService();
+      await odoo.loadSession();
+      final children = await odoo.getChildren();
+      final names = <String>[];
+      _nameToSiswaId.clear();
+      for (final child in children) {
+        final name = (child['name'] ?? child['nama'] ?? '').toString();
+        final id = (child['id'] ?? child['siswa_id'])?.toString() ?? '';
+        if (name.isEmpty || id.isEmpty) continue;
+        names.add(name);
+        _nameToSiswaId[name] = id;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _students = names.isEmpty ? StudentData.allStudents : names;
+      });
+
+      final provider = context.read<AuthProvider>();
+      var selected = provider.selectedStudent;
+      if (selected.isEmpty || !_students.contains(selected)) {
+        selected = _students.isNotEmpty ? _students.first : StudentData.defaultStudent;
+        provider.selectStudent(selected);
+      }
+
+      String? siswaId = savedId;
+      if ((siswaId == null || siswaId.isEmpty) && _nameToSiswaId.containsKey(selected)) {
+        siswaId = _nameToSiswaId[selected];
+        if (siswaId != null && siswaId.isNotEmpty) {
+          await prefs.setString('siswa_id', siswaId);
+        }
+      }
+
+      await _syncSelectedStudent(selected, persistId: false);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _students = StudentData.allStudents;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingStudents = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _syncSelectedStudent(String student, {bool persistId = true}) async {
+    if (!mounted || student.isEmpty) return;
+    if (_selectedStudent == student && !persistId) return;
     setState(() {
       _selectedStudent = student;
     });
+    if (persistId) {
+      final id = _nameToSiswaId[student];
+      if (id != null && id.isNotEmpty) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('siswa_id', id);
+        } catch (_) {}
+      }
+    }
+    _scrollListToTop();
+  }
+
+  Future<void> _handleStudentSelection(String student) async {
+    await _syncSelectedStudent(student);
+    if (!mounted) return;
+    setState(() {
+      _isStudentOverlayVisible = false;
+    });
+    try {
+      context.read<AuthProvider>().selectStudent(student);
+    } catch (_) {}
   }
 
   @override
@@ -224,21 +314,16 @@ class _StatusPageState extends State<StatusPage> with TickerProviderStateMixin {
             SearchOverlayWidget(
               isVisible: _isStudentOverlayVisible,
               title: AppLocalizations.of(context).pilihSantri,
-              items: _students,
+              items: _students.isEmpty ? [StudentData.defaultStudent] : _students,
               selectedItem: _selectedStudent,
-              onItemSelected: (student) {
-                setState(() {
-                  _selectedStudent = student;
-                  _isStudentOverlayVisible = false;
-                });
-              },
+              onItemSelected: (student) => _handleStudentSelection(student),
               onClose: () {
                 setState(() {
                   _isStudentOverlayVisible = false;
                 });
               },
               searchHint: AppLocalizations.of(context).cariSantri,
-              avatarUrl: StudentData.defaultAvatarUrl,
+              avatarUrl: StudentData.getStudentAvatar(_selectedStudent),
             ),
         ],
       ),
@@ -258,16 +343,26 @@ class _StatusPageState extends State<StatusPage> with TickerProviderStateMixin {
   }
 
   Widget _buildStudentSelector() {
-    return StudentSelectionWidget(
-      selectedStudent: _selectedStudent,
-      students: _students,
-      onStudentChanged: _onStudentChanged,
-      onOverlayVisibilityChanged: (visible) {
-        setState(() {
-          _isStudentOverlayVisible = visible;
-        });
-      },
-      avatarUrl: StudentData.defaultAvatarUrl,
+    final students = _students.isEmpty ? [StudentData.defaultStudent] : _students;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Opacity(
+        opacity: _isLoadingStudents ? 0.5 : 1,
+        child: AbsorbPointer(
+          absorbing: _isLoadingStudents,
+          child: StudentSelectionWidget(
+            selectedStudent: _selectedStudent,
+            students: students,
+            onStudentChanged: _onStudentChanged,
+            onOverlayVisibilityChanged: (visible) {
+              setState(() {
+                _isStudentOverlayVisible = visible;
+              });
+            },
+            avatarUrl: StudentData.getStudentAvatar(_selectedStudent),
+          ),
+        ),
+      ),
     );
   }
 
@@ -531,92 +626,6 @@ class _StatusPageState extends State<StatusPage> with TickerProviderStateMixin {
             _paymentTypeFilters.updateAll((key, value) => true);
           });
         },
-      ),
-    );
-  }
-
-  Widget _buildSortButton(String label, StateSetter setModalState) {
-    final isSelected = _selectedSortOrder == label;
-    return GestureDetector(
-      onTap: () {
-        setModalState(() {
-          _selectedSortOrder = label;
-        });
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          color: isSelected ? AppStyles.primaryColor : Colors.white,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: isSelected ? AppStyles.primaryColor : Colors.grey[300]!,
-          ),
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: GoogleFonts.poppins(
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-              color: isSelected ? Colors.white : Colors.black87,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDateButton(String label, DateTime? date, Function(DateTime) onDateSelected) {
-    return GestureDetector(
-      onTap: () async {
-        final selectedDate = await showDatePicker(
-          context: context,
-          initialDate: date ?? DateTime.now(),
-          firstDate: DateTime(2020),
-          lastDate: DateTime(2030),
-          builder: (context, child) {
-            return Theme(
-              data: Theme.of(context).copyWith(
-                colorScheme: ColorScheme.light(
-                  primary: AppStyles.primaryColor,
-                ),
-              ),
-              child: child!,
-            );
-          },
-        );
-        if (selectedDate != null) {
-          onDateSelected(selectedDate);
-        }
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.grey[300]!),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: GoogleFonts.poppins(
-                fontSize: 12,
-                color: Colors.grey[600],
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              date != null ? _formatDateDisplay(date) : 'Pilih tanggal',
-              style: GoogleFonts.poppins(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: date != null ? Colors.black87 : Colors.grey[500],
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }

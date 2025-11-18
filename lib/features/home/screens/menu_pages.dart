@@ -108,7 +108,7 @@ class _BerandaPageState extends State<BerandaPage> {
       _nameToSiswaId.clear();
       for (final c in children) {
         final name = (c['name'] ?? c['nama'] ?? '').toString();
-        final id = c['id']?.toString() ?? '';
+        final id = (c['siswa_id'] ?? c['student_id'] ?? c['id'])?.toString() ?? '';
         if (name.isNotEmpty && id.isNotEmpty) {
           names.add(name);
           _nameToSiswaId[name] = id;
@@ -116,7 +116,7 @@ class _BerandaPageState extends State<BerandaPage> {
       }
       if (!mounted) return;
       setState(() {
-        _allSantri = names;
+        _allSantri = names.isEmpty ? [StudentData.defaultStudent] : names;
       });
       // Tentukan selected dari Provider bila ada, jika tidak pakai yang pertama
       final provider = context.read<AuthProvider>();
@@ -491,7 +491,7 @@ class _BerandaPageState extends State<BerandaPage> {
               SearchOverlayWidget(
                 isVisible: _isStudentOverlayVisible,
                 title: 'Pilih Santri',
-                items: _allSantri,
+                items: _allSantri.isEmpty ? [StudentData.defaultStudent] : _allSantri,
                 selectedItem: context.watch<AuthProvider>().selectedStudent,
                 onItemSelected: (santri) {
                   // Close overlay immediately; do not maintain a separate local selected name
@@ -521,7 +521,9 @@ class _BerandaPageState extends State<BerandaPage> {
                   });
                 },
                 searchHint: 'Cari santri...',
-                avatarUrl: StudentData.defaultAvatarUrl,
+                avatarUrl: StudentData.getStudentAvatar(
+                  context.read<AuthProvider>().selectedStudent,
+                ),
               ),
           ],
         ),
